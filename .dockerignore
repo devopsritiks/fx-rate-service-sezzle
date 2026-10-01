@@ -1,0 +1,12 @@
+bin/
+dist/
+*.log
+.DS_Store
+.git/
+.github/
+.env
+*.env
+docker-compose*.yml
+deploy/
+README.md
+PROMPTS.md

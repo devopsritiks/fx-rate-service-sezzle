@@ -1,0 +1,13 @@
+bin/
+*.env
+.env
+.DS_Store
+*.log
+dist/
+
+# Local-only TLS trust workaround used during development on networks
+# with TLS-interception (corporate proxies) — never meant to be
+# committed; images are built in CI instead, which doesn't need this.
+ca-certs-TEMP/
+*.pem
+*.crt
