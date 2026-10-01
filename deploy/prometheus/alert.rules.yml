@@ -1,0 +1,81 @@
+# Loaded directly by Prometheus (rule_files in prometheus.yml) and
+# evaluated in-process. No Alertmanager wired up in this phase — these
+# alerts are visible in Prometheus's own UI (http://localhost:9090/alerts)
+# so you can watch them go from inactive -> pending -> firing during the
+# chaos demo, but nothing routes or notifies on them yet.
+groups:
+  - name: fxservice
+    rules:
+      - alert: FxServiceBreakerOpen
+        # fxservice_circuit_breaker_state: 0=closed, 1=half-open, 2=open.
+        expr: fxservice_circuit_breaker_state{breaker="frankfurter"} == 2
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "FX service circuit breaker is open"
+          description: "The Frankfurter circuit breaker has been open for over 30s — the vendor is being treated as unavailable and calls are failing fast. Cached data may still be served as stale; check fxservice_cache_requests_total{result=\"stale\"}."
+
+      - alert: FxServiceHighErrorRate
+        # Ratio of 5xx responses to all responses, over a 2m window, for
+        # any route. A single route label is kept (not summed away) so
+        # the alert can tell you *which* endpoint is failing.
+        expr: |
+          sum by (route) (rate(fxservice_http_requests_total{status="5xx"}[2m]))
+            /
+          sum by (route) (rate(fxservice_http_requests_total[2m]))
+            > 0.1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx rate on {{ $labels.route }}"
+          description: "More than 10% of requests to {{ $labels.route }} have returned 5xx over the last 2 minutes."
+
+      - alert: FxServiceServingStaleData
+        # Any stale-cache serving at all is worth a human noticing, even
+        # though — per the /ready design — it's deliberately not treated
+        # as an outage by itself. This is the "FYI, degraded" signal.
+        expr: increase(fxservice_cache_requests_total{result="stale"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "FX service is serving stale cached rates"
+          description: "At least one request in the last 5 minutes was served stale data because the vendor call failed. This is expected, bounded behavior (see CACHE_STALE_MAX_AGE), not necessarily an outage — but worth knowing the vendor is currently unreliable."
+
+      - alert: FxServiceHighP99Latency
+        # p99 computed from the request-duration histogram's buckets.
+        # Threshold is set above the per-attempt vendor timeout default
+        # (4s) plus some headroom for a retry, so this fires on genuinely
+        # slow responses, not normal cache-miss latency.
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, route) (rate(fxservice_http_request_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "FX service p99 latency is high on {{ $labels.route }}"
+          description: "p99 request latency for {{ $labels.route }} has exceeded 5s for 2 minutes — check vendor_call_duration_seconds and whether the circuit breaker should have tripped by now."
+
+      - alert: FxServiceAuditWriteDegraded
+        # Fires on EITHER dropped records (the queue filled up — see
+        # internal/audit's design doc for why we drop rather than block
+        # the API) OR sustained write errors (Postgres is rejecting or
+        # unreachable for writes). Either condition means the audit trail
+        # has a gap right now; this is explicitly NOT an alert on the API
+        # itself, which is expected to keep serving normally throughout —
+        # see the /ready design note on why a Postgres outage never fails
+        # readiness.
+        expr: |
+          increase(fxservice_audit_records_dropped_total[5m]) > 0
+            or
+          increase(fxservice_audit_write_errors_total[5m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "FX service audit log is dropping records or failing to write"
+          description: "The audit writer has dropped records (queue full) or seen repeated write failures (Postgres likely unreachable) in the last 5 minutes. The API itself is expected to be unaffected — this is specifically about audit-trail completeness. Check fxservice_audit_queue_depth and /ready's postgres status."

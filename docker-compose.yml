@@ -1,0 +1,158 @@
+name: fxservice-stack
+
+# Default mode: PULL pre-built images from GHCR. This is the "one
+# command, works on any machine" path — docker compose up -d needs
+# nothing but Docker itself, no Go toolchain, no local build, and no
+# corporate-proxy TLS interception to fight with (building locally was
+# exactly the pain point that motivated moving builds to CI — see
+# .github/workflows/docker-publish.yml).
+#
+# IMAGE_OWNER/IMAGE_TAG are env vars with defaults baked in below via
+# ${VAR:-default} syntax, so this file runs correctly with zero .env file
+# and zero exported variables. Override IMAGE_TAG to pin a specific git
+# short SHA instead of :latest, e.g.:
+#   IMAGE_TAG=abc1234 docker compose up -d
+#
+# To build from source instead of pulling (e.g. you're changing the Go
+# code locally), layer the build override on top:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      # Local-demo defaults only — never hardcoded in Go code (see
+      # internal/config), always overridable via env. A real deployment
+      # would inject real credentials via a secrets manager, not this
+      # file.
+      POSTGRES_USER: "${POSTGRES_USER:-fx}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-fx}"
+      POSTGRES_DB: "${POSTGRES_DB:-fx}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fx} -d ${POSTGRES_DB:-fx}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  fakevendor:
+    image: ghcr.io/${IMAGE_OWNER:-devopsritiks}/fakevendor:${IMAGE_TAG:-latest}
+    ports:
+      - "9090:9090"
+    # No compose-level healthcheck: a Docker HEALTHCHECK command must run
+    # INSIDE the container, and this (like fxservice) is a distroless
+    # image with no shell, curl, or wget to exec. See the README note on
+    # this stack's health signal (depends_on: service_started here, plus
+    # Prometheus's own scrape-based up/down as the real indicator for
+    # fxservice once it depends on this).
+    #
+    # Starts in passthrough mode by default (proxies to the real
+    # Frankfurter API) — this is fakevendor's own zero-value default,
+    # nothing set here. So out of the box, the UI and API show real,
+    # live rates; the chaos demo (make chaos-on / POST /admin/mode)
+    # switches it into failure injection on demand.
+    restart: unless-stopped
+
+  fxservice:
+    image: ghcr.io/${IMAGE_OWNER:-devopsritiks}/fxservice:${IMAGE_TAG:-latest}
+    ports:
+      - "8080:8080"
+    environment:
+      # Inside compose, fxservice reaches fakevendor by its service name —
+      # Docker's embedded DNS resolves "fakevendor" to that container's
+      # address. This is the whole point of including fakevendor in this
+      # stack: you can break the vendor live, from outside, while
+      # fxservice keeps running and its graphs visibly react.
+      FRANKFURTER_BASE_URL: "http://fakevendor:9090"
+      LOG_LEVEL: "info"
+      SERVICE_NAME: "sezzle-fx-service"
+      # Shorter TTLs than production defaults so a demo doesn't require
+      # waiting an hour to see fresh-TTL expiry or 48h for max-stale.
+      CACHE_FRESH_TTL: "30s"
+      CACHE_STALE_MAX_AGE: "5m"
+      UPSTREAM_TIMEOUT: "2s"
+      RETRY_MAX_ATTEMPTS: "2"
+      BREAKER_FAILURE_THRESHOLD: "3"
+      BREAKER_OPEN_DURATION: "15s"
+      POSTGRES_DSN: "postgres://${POSTGRES_USER:-fx}:${POSTGRES_PASSWORD:-fx}@postgres:5432/${POSTGRES_DB:-fx}?sslmode=disable"
+      # Shorter than the 2s production default so the audit-demo Make
+      # targets (db-down, chaos) show write failures/retries quickly
+      # rather than waiting out a longer interval.
+      AUDIT_FLUSH_INTERVAL: "2s"
+    depends_on:
+      fakevendor:
+        condition: service_started
+      # Deliberately service_started, NOT service_healthy: fxservice must
+      # come up and serve FX rates even if Postgres is still starting or
+      # entirely down — see internal/audit's design and this file's
+      # postgres service comment. Waiting for "started" (the container
+      # process exists) rather than "healthy" (pg_isready passes) means
+      # compose brings fxservice up promptly regardless of how long
+      # Postgres takes to become ready; fxservice's own migration retry
+      # loop and the audit writer's retry/backoff handle the rest.
+      postgres:
+        condition: service_started
+    healthcheck:
+      # /health is a distroless image with no shell/curl/wget available,
+      # so we can't exec a healthcheck command inside the container
+      # itself. Compose's healthcheck requires a command that runs
+      # *inside* the container — since distroless has none, we rely on
+      # Docker's own TCP-level container state plus Prometheus's own
+      # scrape-based up/down signal (visible at http://localhost:9091/targets)
+      # as the real health signal for this stack. See the README note on
+      # why there's no compose-level healthcheck directive for this
+      # service specifically.
+      disable: true
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=6h" # local demo only, not a production retention setting
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      fxservice:
+        condition: service_started
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_PATHS_CONFIG: /etc/grafana/grafana.ini
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FX Rate Service</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --text: #1a1d23;
+    --muted: #5b6270;
+    --border: #e1e4e9;
+    --accent: #2f6fed;
+    --accent-text: #ffffff;
+    --ok: #1e8e3e;
+    --warn: #b7791f;
+    --err: #d23a3a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1d2026;
+      --text: #e7e9ee;
+      --muted: #9aa2b1;
+      --border: #2c303a;
+      --accent: #5b8dfb;
+      --accent-text: #0b0d10;
+      --ok: #4fd17a;
+      --warn: #e0b24b;
+      --err: #f27272;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 48px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main {
+    max-width: 920px;
+    margin: 0 auto;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0;
+  }
+  header .sub {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 720px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .card h2 {
+    font-size: 15px;
+    margin: 0 0 14px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin: 10px 0 4px;
+  }
+  label:first-of-type { margin-top: 0; }
+  input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    font-family: var(--mono);
+    text-transform: uppercase;
+  }
+  input[name="amount"] { text-transform: none; }
+  button {
+    margin-top: 14px;
+    width: 100%;
+    padding: 9px 12px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: var(--accent-text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:active { opacity: 0.85; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .result {
+    margin-top: 16px;
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+  }
+  .result:empty { display: none; }
+  .badges {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    font-family: var(--mono);
+  }
+  .badge-hit   { background: rgba(30,142,62,0.15); color: var(--ok); }
+  .badge-miss  { background: rgba(91,98,112,0.15); color: var(--muted); }
+  .badge-stale { background: rgba(183,121,31,0.18); color: var(--warn); }
+  .badge-stale-flag { background: rgba(183,121,31,0.18); color: var(--warn); }
+  .badge-err   { background: rgba(210,58,58,0.15); color: var(--err); }
+  .rows { font-family: var(--mono); font-size: 13px; }
+  .rows div { display: flex; justify-content: space-between; padding: 2px 0; }
+  .rows .k { color: var(--muted); }
+  .error-box {
+    border: 1px solid var(--err);
+    background: rgba(210,58,58,0.08);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .error-box .code {
+    font-family: var(--mono);
+    font-weight: 700;
+    color: var(--err);
+    font-size: 13px;
+  }
+  .error-box .msg {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .rates-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 13px; }
+  .rates-table td { padding: 3px 0; }
+  .rates-table td:last-child { text-align: right; }
+  footer {
+    margin-top: 32px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12.5px;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--accent); }
+  .spinner-text { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>FX Rate Service</h1>
+    <span class="sub">fronting Frankfurter, caching, resilient, audited</span>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Get rates</h2>
+      <form id="rates-form">
+        <label for="rates-base">Base currency</label>
+        <input id="rates-base" name="base" value="USD" maxlength="3" required>
+        <label for="rates-symbols">Symbols (comma-separated, optional)</label>
+        <input id="rates-symbols" name="symbols" value="CAD,EUR,GBP">
+        <button type="submit">Get rates</button>
+      </form>
+      <div class="result" id="rates-result"></div>
+    </section>
+
+    <section class="card">
+      <h2>Convert</h2>
+      <form id="convert-form">
+        <label for="conv-from">From</label>
+        <input id="conv-from" name="from" value="USD" maxlength="3" required>
+        <label for="conv-to">To</label>
+        <input id="conv-to" name="to" value="CAD" maxlength="3" required>
+        <label for="conv-amount">Amount</label>
+        <input id="conv-amount" name="amount" value="100.00" required>
+        <button type="submit">Convert</button>
+      </form>
+      <div class="result" id="convert-result"></div>
+    </section>
+  </div>
+
+  <footer>
+    <a href="http://localhost:3000" target="_blank" rel="noopener">Grafana</a>
+    <a href="http://localhost:9091" target="_blank" rel="noopener">Prometheus</a>
+    <a href="/metrics" target="_blank" rel="noopener">/metrics</a>
+    <a href="/ready" target="_blank" rel="noopener">/ready</a>
+  </footer>
+</main>
+
+<script>
+// Plain JS, no build step, no framework — this is a thin demo UI for a
+// Go backend, not an app in its own right. Everything here is a small,
+// direct translation of "call the API, render what came back."
+
+function cacheBadgeClass(status) {
+  if (status === "HIT") return "badge-hit";
+  if (status === "STALE") return "badge-stale";
+  return "badge-miss";
+}
+
+// Maps our JSON error codes (see internal/httpapi/errors.go) to a short
+// human label. Falls back to the code itself for anything not listed
+// here, so a new error code added server-side still renders something
+// sensible instead of breaking the UI.
+const ERROR_LABELS = {
+  INVALID_CURRENCY: "Invalid currency code",
+  INVALID_AMOUNT: "Invalid amount",
+  RATE_LIMITED: "Rate limited — slow down",
+  CIRCUIT_OPEN: "Vendor circuit breaker is open",
+  STALE_DATA_UNAVAILABLE: "Cached rate too old, vendor unavailable",
+  NOT_FOUND: "Currency not found",
+  UPSTREAM_UNAVAILABLE: "Vendor temporarily unavailable",
+  INTERNAL_ERROR: "Internal error",
+};
+
+function renderError(container, body, status) {
+  const code = (body && body.error && body.error.code) || "ERROR";
+  const message = (body && body.error && body.error.message) || "Request failed";
+  const label = ERROR_LABELS[code] || code;
+  container.innerHTML = `
+    <div class="error-box">
+      <div class="code">${escapeHtml(code)} <span style="color:var(--muted);font-weight:400;">(HTTP ${status})</span></div>
+      <div class="msg"><strong>${escapeHtml(label)}</strong> — ${escapeHtml(message)}</div>
+    </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function badgesHtml(cacheStatus, stale, ageSeconds) {
+  let html = `<span class="badge ${cacheBadgeClass(cacheStatus)}">${escapeHtml(cacheStatus || "?")}</span>`;
+  if (stale) {
+    html += `<span class="badge badge-stale-flag">STALE DATA</span>`;
+  }
+  if (typeof ageSeconds === "number") {
+    html += `<span class="badge badge-miss">age ${ageSeconds}s</span>`;
+  }
+  return html;
+}
+
+async function callApi(url) {
+  const res = await fetch(url);
+  const cacheStatus = res.headers.get("X-Cache");
+  let body;
+  try {
+    body = await res.json();
+  } catch (e) {
+    body = null;
+  }
+  return { ok: res.ok, status: res.status, cacheStatus, body };
+}
+
+document.getElementById("rates-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const container = document.getElementById("rates-result");
+  const base = document.getElementById("rates-base").value.trim().toUpperCase();
+  const symbols = document.getElementById("rates-symbols").value.trim().toUpperCase();
+
+  container.innerHTML = `<div class="spinner-text">Loading…</div>`;
+
+  const url = "/v1/rates/" + encodeURIComponent(base) +
+    (symbols ? "?symbols=" + encodeURIComponent(symbols) : "");
+
+  try {
+    const { ok, status, cacheStatus, body } = await callApi(url);
+    if (!ok) {
+      renderError(container, body, status);
+      return;
+    }
+    const rows = Object.entries(body.rates || {})
+      .map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`)
+      .join("");
+    container.innerHTML = `
+      <div class="badges">${badgesHtml(cacheStatus, body.stale, body.age_seconds)}</div>
+      <div class="rows">
+        <div><span class="k">base</span><span>${escapeHtml(body.base)}</span></div>
+        <div><span class="k">date</span><span>${escapeHtml(body.date)}</span></div>
+      </div>
+      <table class="rates-table">${rows}</table>`;
+  } catch (err) {
+    container.innerHTML = `<div class="error-box"><div class="msg">Network error: ${escapeHtml(err.message)}</div></div>`;
+  }
+});
+
+document.getElementById("convert-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const container = document.getElementById("convert-result");
+  const from = document.getElementById("conv-from").value.trim().toUpperCase();
+  const to = document.getElementById("conv-to").value.trim().toUpperCase();
+  const amount = document.getElementById("conv-amount").value.trim();
+
+  container.innerHTML = `<div class="spinner-text">Loading…</div>`;
+
+  const url = "/v1/convert?from=" + encodeURIComponent(from) +
+    "&to=" + encodeURIComponent(to) + "&amount=" + encodeURIComponent(amount);
+
+  try {
+    const { ok, status, cacheStatus, body } = await callApi(url);
+    if (!ok) {
+      renderError(container, body, status);
+      return;
+    }
+    container.innerHTML = `
+      <div class="badges">${badgesHtml(cacheStatus, body.stale, body.age_seconds)}</div>
+      <div class="rows">
+        <div><span class="k">${escapeHtml(body.amount)} ${escapeHtml(body.from)}</span><span>= ${escapeHtml(body.converted)} ${escapeHtml(body.to)}</span></div>
+        <div><span class="k">rate</span><span>${escapeHtml(body.rate)}</span></div>
+        <div><span class="k">date</span><span>${escapeHtml(body.date)}</span></div>
+      </div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="error-box"><div class="msg">Network error: ${escapeHtml(err.message)}</div></div>`;
+  }
+});
+</script>
+</body>
+</html>
